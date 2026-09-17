@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Install dependencies
+        run: npm ci
+      - name: Validate frontend
+        run: |
+          npm test
+          npm run build
+      - name: Validate Rust
+        run: |
+          cargo fmt --manifest-path src-tauri\Cargo.toml --check
+          cargo test --manifest-path src-tauri\Cargo.toml
+      - name: Build Windows bundles
+        run: npm run tauri build
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_NAME -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Release tag must use vMAJOR.MINOR.PATCH."
+          }
+
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          $msi = "src-tauri\target\release\bundle\msi\AI Allowance_${version}_x64_en-US.msi"
+          $nsis = "src-tauri\target\release\bundle\nsis\AI Allowance_${version}_x64-setup.exe"
+
+          gh release create $env:GITHUB_REF_NAME `
+            "src-tauri\target\release\ai-allowance.exe#AI Allowance portable executable" `
+            "$msi#AI Allowance MSI installer" `
+            "$nsis#AI Allowance NSIS installer" `
+            --verify-tag `
+            --title "AI Allowance $env:GITHUB_REF_NAME" `
+            --generate-notes

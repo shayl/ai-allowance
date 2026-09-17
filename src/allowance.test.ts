@@ -1,0 +1,71 @@
+import { describe, expect, it } from "vitest";
+import { calculateCombinedUsage, type AllowanceMetric, type ProviderSnapshot } from "./App";
+
+function snapshot(accountId: string, metrics: AllowanceMetric[]): ProviderSnapshot {
+  return {
+    accountId,
+    provider: "github",
+    label: accountId,
+    scope: "Personal account",
+    freshness: "fresh",
+    updatedAt: "2026-09-15T00:00:00.000Z",
+    metrics,
+  };
+}
+
+describe("calculateCombinedUsage", () => {
+  it("uses explicit remaining instead of source-reported consumed", () => {
+    const result = calculateCombinedUsage([
+      snapshot("account-a", [
+        { kind: "credits", label: "Credits", unit: "credits", consumed: 10, limit: 100, remaining: 25 },
+      ]),
+    ]);
+
+    expect(result.percentage).toBe(75);
+    expect(result.unitPercentages).toEqual({ credits: 75 });
+  });
+
+  it("weights same-unit usage by aggregating raw used and limits across accounts", () => {
+    const result = calculateCombinedUsage([
+      snapshot("account-a", [
+        { kind: "credits", label: "Credits", unit: "credits", consumed: 80, limit: 100 },
+      ]),
+      snapshot("account-b", [
+        { kind: "credits", label: "Credits", unit: "credits", consumed: 50, limit: 300 },
+      ]),
+    ]);
+
+    expect(result.percentage).toBe(32.5);
+    expect(result.unitPercentages).toEqual({ credits: 32.5 });
+    expect(result.accountCount).toBe(2);
+  });
+
+  it("averages unlike-unit percentages without mixing their raw values", () => {
+    const result = calculateCombinedUsage([
+      snapshot("account-a", [
+        { kind: "currency", label: "Spend", unit: "USD", consumed: 50, limit: 100 },
+      ]),
+      snapshot("account-b", [
+        { kind: "tokens", label: "Tokens", unit: "tokens", consumed: 900, limit: 1000 },
+      ]),
+    ]);
+
+    expect(result.unitPercentages).toEqual({ usd: 50, tokens: 90 });
+    expect(result.percentage).toBe(70);
+  });
+
+  it("returns unavailable when no snapshot has a positive authoritative limit", () => {
+    const result = calculateCombinedUsage([
+      snapshot("account-a", [
+        { kind: "tokens", label: "Tokens", unit: "tokens", consumed: 500 },
+        { kind: "credits", label: "Credits", unit: "credits", consumed: 20, limit: 0 },
+      ]),
+    ]);
+
+    expect(result).toEqual({
+      percentage: undefined,
+      accountCount: 0,
+      unitPercentages: {},
+    });
+  });
+});
