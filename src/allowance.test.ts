@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { calculateCombinedUsage, type AllowanceMetric, type ProviderSnapshot } from "./App";
+import {
+  calculateCombinedUsage,
+  formatPercentage,
+  metricUsedAmount,
+  type AllowanceMetric,
+  type ProviderSnapshot,
+} from "./App";
 
 function snapshot(accountId: string, metrics: AllowanceMetric[]): ProviderSnapshot {
   return {
@@ -40,6 +46,31 @@ describe("calculateCombinedUsage", () => {
     expect(result.accountCount).toBe(2);
   });
 
+  it("clamps each used amount to its own allowance before aggregation", () => {
+    const result = calculateCombinedUsage([
+      snapshot("remaining-above-limit", [
+        { kind: "credits", label: "Credits", unit: "AIC", consumed: 80, limit: 100, remaining: 125 },
+      ]),
+      snapshot("negative-remaining", [
+        { kind: "credits", label: "Credits", unit: "AIC", consumed: 20, limit: 100, remaining: -10 },
+      ]),
+      snapshot("consumed-above-limit", [
+        { kind: "credits", label: "Credits", unit: "AIC", consumed: 150, limit: 100 },
+      ]),
+    ]);
+
+    expect(result.unitPercentages.aic).toBeCloseTo(200 / 3);
+    expect(result.percentage).toBeCloseTo(200 / 3);
+    expect(metricUsedAmount({
+      kind: "credits",
+      label: "Credits",
+      unit: "AIC",
+      consumed: 80,
+      limit: 100,
+      remaining: 125,
+    })).toBe(0);
+  });
+
   it("averages unlike-unit percentages without mixing their raw values", () => {
     const result = calculateCombinedUsage([
       snapshot("account-a", [
@@ -66,6 +97,19 @@ describe("calculateCombinedUsage", () => {
       percentage: undefined,
       accountCount: 0,
       unitPercentages: {},
+    });
+  });
+
+  describe("formatPercentage", () => {
+    it("keeps small nonzero percentages meaningful", () => {
+      expect(formatPercentage(0.2507)).toBe("0.25%");
+      expect(formatPercentage(0.001)).toBe("<0.01%");
+    });
+
+    it("does not display 100 percent before the allowance is exhausted", () => {
+      expect(formatPercentage(99.75)).toBe("99.75%");
+      expect(formatPercentage(99.999)).toBe("99.99%");
+      expect(formatPercentage(100)).toBe("100%");
     });
   });
 });

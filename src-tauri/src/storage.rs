@@ -121,14 +121,6 @@ impl Storage {
         let mut providers: Vec<ProviderSnapshot> = rows
             .filter_map(Result::ok)
             .filter_map(|payload| serde_json::from_str::<ProviderSnapshot>(&payload).ok())
-            .filter(|provider| {
-                !(provider.account_id.starts_with("github-local-")
-                    && !provider.metrics.is_empty()
-                    && provider
-                        .metrics
-                        .iter()
-                        .all(|metric| metric.consumed.abs() < f64::EPSILON))
-            })
             .collect();
         if let Some(local) = local_copilot_snapshot() {
             providers.retain(|provider| provider.account_id != local.account_id);
@@ -250,7 +242,7 @@ fn local_copilot_snapshot_from_connection(
         metrics: vec![
             AllowanceMetric {
                 kind: "credits".into(),
-                label: "AI credits used".into(),
+                label: "AIC used".into(),
                 unit: "AIC".into(),
                 consumed: usage.aic,
                 limit: None,
@@ -422,5 +414,55 @@ mod tests {
             copilot_month_bounds(now),
             ("2026-12-01T00:00:00Z".into(), "2027-01-01T00:00:00Z".into())
         );
+    }
+
+    #[test]
+    fn dashboard_keeps_zero_used_positive_limit_github_snapshots() {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        connection
+            .execute_batch(
+                "CREATE TABLE snapshots (
+                   account_id TEXT PRIMARY KEY,
+                   payload TEXT NOT NULL,
+                   updated_at TEXT NOT NULL
+                 );",
+            )
+            .expect("snapshot table");
+        let snapshot = ProviderSnapshot {
+            account_id: "github-local-zero".into(),
+            provider: "github".into(),
+            label: "GitHub Copilot".into(),
+            scope: "developer · enterprise plan".into(),
+            freshness: "fresh".into(),
+            updated_at: "2026-09-15T23:27:34.559Z".into(),
+            reset_at: Some("2026-10-01T00:00:00Z".into()),
+            metrics: vec![AllowanceMetric {
+                kind: "credits".into(),
+                label: "Copilot allowance (AIC)".into(),
+                unit: "AIC".into(),
+                consumed: 0.0,
+                limit: Some(200000.0),
+                remaining: Some(200000.0),
+            }],
+            message: None,
+        };
+        connection
+            .execute(
+                "INSERT INTO snapshots(account_id, payload, updated_at) VALUES (?1, ?2, ?3)",
+                params![
+                    snapshot.account_id,
+                    serde_json::to_string(&snapshot).expect("snapshot JSON"),
+                    snapshot.updated_at
+                ],
+            )
+            .expect("saved snapshot");
+        let storage = Storage { connection };
+
+        let dashboard = storage.dashboard().expect("dashboard");
+
+        assert!(dashboard
+            .providers
+            .iter()
+            .any(|provider| provider.account_id == "github-local-zero"));
     }
 }

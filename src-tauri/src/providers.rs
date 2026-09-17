@@ -134,23 +134,14 @@ async fn github(account: &ProviderAccount) -> Result<ProviderSnapshot, String> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let credits = items
-        .iter()
-        .map(|item| number(item, &["netQuantity", "net_quantity", "quantity"]))
-        .sum::<f64>();
-    let cost = items
-        .iter()
-        .map(|item| {
-            number(
-                item,
-                &["netAmount", "net_amount", "grossAmount", "gross_amount"],
-            )
-        })
-        .sum::<f64>();
-    Ok(snapshot(account, vec![
-        AllowanceMetric { kind: "credits".into(), label: "AI credits used".into(), unit: "credits".into(), consumed: credits, limit: None, remaining: None },
-        AllowanceMetric { kind: "currency".into(), label: "Net spend".into(), unit: "USD".into(), consumed: cost, limit: None, remaining: None },
-    ], Some("GitHub's reporting API returns authoritative consumption; a remaining balance is shown only when the API provides a limit.".into())))
+    Ok(snapshot(
+        account,
+        github_billing_metrics(&items),
+        Some(
+            "GitHub billing reports use grossQuantity for total AIC consumed and netAmount for actual billed spend. This spend is separate from Copilot quota value and from Power BI cross-ecosystem spend, which is not currently imported."
+                .into(),
+        ),
+    ))
 }
 
 fn github_copilot_quota_snapshot(
@@ -158,9 +149,48 @@ fn github_copilot_quota_snapshot(
     json: &Value,
 ) -> Option<ProviderSnapshot> {
     let quota = json.get("quota_snapshots")?.get("premium_interactions")?;
-    let entitlement = number(quota, &["entitlement"]);
-    let remaining = number(quota, &["quota_remaining", "remaining"]);
-    if entitlement <= 0.0 {
+    let entitlement = optional_number(quota, &["entitlement"]);
+    let remaining = optional_number(quota, &["quota_remaining", "remaining"]);
+    let reported_used = optional_number(quota, &["credits_used"]);
+    let mut metrics = Vec::new();
+    let mut has_allowance = false;
+
+    if let (Some(entitlement), Some(remaining)) = (entitlement, remaining) {
+        if entitlement > 0.0 {
+            let normalized_remaining = remaining.clamp(0.0, entitlement);
+            let used = entitlement - normalized_remaining;
+            metrics.push(AllowanceMetric {
+                kind: "credits".into(),
+                label: "Copilot allowance (AIC)".into(),
+                unit: "AIC".into(),
+                consumed: used,
+                limit: Some(entitlement),
+                remaining: Some(normalized_remaining),
+            });
+            metrics.push(AllowanceMetric {
+                kind: "currency".into(),
+                label: "Used quota value (USD equivalent)".into(),
+                unit: "USD".into(),
+                consumed: used / 100.0,
+                limit: None,
+                remaining: None,
+            });
+            has_allowance = true;
+        }
+    }
+
+    if let Some(reported_used) = reported_used {
+        metrics.push(AllowanceMetric {
+            kind: "credits".into(),
+            label: "GitHub-reported credits_used (AIC)".into(),
+            unit: "AIC".into(),
+            consumed: reported_used,
+            limit: None,
+            remaining: None,
+        });
+    }
+
+    if metrics.is_empty() {
         return None;
     }
 
@@ -187,29 +217,40 @@ fn github_copilot_quota_snapshot(
         freshness: "fresh".into(),
         updated_at,
         reset_at,
-        metrics: vec![
-            AllowanceMetric {
-                kind: "currency".into(),
-                label: "Microsoft allowance".into(),
-                unit: "USD".into(),
-                consumed: number(quota, &["credits_used"]) / 100.0,
-                limit: Some(entitlement / 100.0),
-                remaining: Some(remaining / 100.0),
-            },
-            AllowanceMetric {
-                kind: "credits".into(),
-                label: "GitHub credits reported used".into(),
-                unit: "AIC".into(),
-                consumed: number(quota, &["credits_used"]),
-                limit: None,
-                remaining: None,
-            },
-        ],
-        message: Some(
-            "Direct Copilot account quota. GitHub defines 1 AI credit as $0.01 USD. The used and remaining counters can refresh on different cadences."
-                .into(),
-        ),
+        metrics,
+        message: Some(if has_allowance {
+            "Copilot allowance consumption is derived from entitlement minus remaining. One AIC has $0.01 of quota value, but neither AIC nor its USD equivalent is actual billed or cross-ecosystem spend. Power BI spend is not currently imported. GitHub's reported counter is shown separately because it can refresh on a different cadence."
+                .into()
+        } else {
+            "GitHub returned a finite credits_used counter, but the entitlement or remaining field was missing or malformed, so no allowance metric was created. Power BI spend is not currently imported."
+                .into()
+        }),
     })
+}
+
+fn github_billing_metrics(items: &[Value]) -> Vec<AllowanceMetric> {
+    let mut metrics = Vec::new();
+    if let Some(credits) = sum_numbers(items, &["grossQuantity", "gross_quantity"]) {
+        metrics.push(AllowanceMetric {
+            kind: "credits".into(),
+            label: "AIC consumed".into(),
+            unit: "AIC".into(),
+            consumed: credits,
+            limit: None,
+            remaining: None,
+        });
+    }
+    if let Some(cost) = sum_numbers(items, &["netAmount", "net_amount"]) {
+        metrics.push(AllowanceMetric {
+            kind: "currency".into(),
+            label: "Actual billed spend".into(),
+            unit: "USD".into(),
+            consumed: cost,
+            limit: None,
+            remaining: None,
+        });
+    }
+    metrics
 }
 
 async fn anthropic(account: &ProviderAccount) -> Result<ProviderSnapshot, String> {
@@ -327,15 +368,25 @@ fn unsupported(account: &ProviderAccount, message: &str) -> ProviderSnapshot {
     result
 }
 
-fn number(value: &Value, keys: &[&str]) -> f64 {
+fn optional_number(value: &Value, keys: &[&str]) -> Option<f64> {
     keys.iter()
-        .find_map(|key| value.get(*key))
-        .and_then(decimal)
-        .unwrap_or(0.0)
+        .filter_map(|key| value.get(*key))
+        .find_map(decimal)
 }
 
 fn decimal(value: &Value) -> Option<f64> {
-    value.as_f64().or_else(|| value.as_str()?.parse().ok())
+    value
+        .as_f64()
+        .or_else(|| value.as_str()?.parse().ok())
+        .filter(|number| number.is_finite())
+}
+
+fn sum_numbers(values: &[Value], keys: &[&str]) -> Option<f64> {
+    let numbers = values
+        .iter()
+        .filter_map(|value| optional_number(value, keys))
+        .collect::<Vec<_>>();
+    (!numbers.is_empty()).then(|| numbers.iter().sum())
 }
 
 fn recursive_sum(value: &Value, keys: &[&str]) -> f64 {
@@ -370,14 +421,20 @@ mod tests {
     }
 
     #[test]
-    fn reads_camel_and_snake_case_github_values() {
-        let value: Value = serde_json::from_str(r#"{"netAmount":2.5,"net_quantity":12}"#).unwrap();
-        assert_eq!(number(&value, &["netAmount", "net_amount"]), 2.5);
-        assert_eq!(number(&value, &["netQuantity", "net_quantity"]), 12.0);
+    fn reads_only_finite_camel_and_snake_case_values() {
+        let value: Value =
+            serde_json::from_str(r#"{"netAmount":"not-a-number","net_amount":2.5}"#).unwrap();
+        assert_eq!(
+            optional_number(&value, &["netAmount", "net_amount"]),
+            Some(2.5)
+        );
+
+        let non_finite: Value = serde_json::from_str(r#"{"credits_used":"NaN"}"#).unwrap();
+        assert_eq!(optional_number(&non_finite, &["credits_used"]), None);
     }
 
     #[test]
-    fn maps_copilot_account_allowance() {
+    fn maps_copilot_account_allowance_with_remaining_precedence() {
         let account = ProviderAccount {
             id: "github-local-test".into(),
             provider: "github".into(),
@@ -392,8 +449,8 @@ mod tests {
                 "quota_reset_date_utc":"2026-10-01T00:00:00Z",
                 "quota_snapshots":{"premium_interactions":{
                     "timestamp_utc":"2026-09-15T23:27:34.559Z",
-                    "credits_used":9510,
-                    "quota_remaining":190509.9,
+                    "credits_used":501,
+                    "quota_remaining":199498.6,
                     "entitlement":200000
                 }}
             }"#,
@@ -402,9 +459,113 @@ mod tests {
 
         let snapshot = github_copilot_quota_snapshot(&account, &value).expect("quota snapshot");
         assert_eq!(snapshot.reset_at.as_deref(), Some("2026-10-01T00:00:00Z"));
-        assert_eq!(snapshot.metrics[0].consumed, 95.1);
-        assert_eq!(snapshot.metrics[0].limit, Some(2000.0));
-        assert_eq!(snapshot.metrics[0].remaining, Some(1905.099));
-        assert_eq!(snapshot.metrics[1].consumed, 9510.0);
+        assert_eq!(snapshot.metrics[0].label, "Copilot allowance (AIC)");
+        assert_eq!(snapshot.metrics[0].unit, "AIC");
+        assert!((snapshot.metrics[0].consumed - 501.4).abs() < 1e-9);
+        assert_eq!(snapshot.metrics[0].limit, Some(200000.0));
+        assert_eq!(snapshot.metrics[0].remaining, Some(199498.6));
+        assert_eq!(
+            snapshot.metrics[1].label,
+            "Used quota value (USD equivalent)"
+        );
+        assert!((snapshot.metrics[1].consumed - 5.014).abs() < 1e-9);
+        assert_eq!(
+            snapshot.metrics[2].label,
+            "GitHub-reported credits_used (AIC)"
+        );
+        assert_eq!(snapshot.metrics[2].consumed, 501.0);
+    }
+
+    #[test]
+    fn omits_incomplete_allowance_but_preserves_a_finite_reported_counter() {
+        let account = ProviderAccount {
+            id: "github-local-test".into(),
+            provider: "github".into(),
+            label: "GitHub Copilot".into(),
+            scope_type: "local_cli".into(),
+            scope: "developer".into(),
+            secret: String::new(),
+        };
+        let value: Value = serde_json::from_str(
+            r#"{
+                "quota_snapshots":{"premium_interactions":{
+                    "credits_used":501,
+                    "quota_remaining":"malformed",
+                    "entitlement":200000
+                }}
+            }"#,
+        )
+        .unwrap();
+
+        let snapshot = github_copilot_quota_snapshot(&account, &value).expect("counter snapshot");
+        assert_eq!(snapshot.metrics.len(), 1);
+        assert_eq!(
+            snapshot.metrics[0].label,
+            "GitHub-reported credits_used (AIC)"
+        );
+        assert_eq!(snapshot.metrics[0].consumed, 501.0);
+        assert!(snapshot.metrics[0].limit.is_none());
+        assert!(snapshot
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("missing or malformed")));
+    }
+
+    #[test]
+    fn omits_a_non_finite_reported_counter() {
+        let account = ProviderAccount {
+            id: "github-local-test".into(),
+            provider: "github".into(),
+            label: "GitHub Copilot".into(),
+            scope_type: "local_cli".into(),
+            scope: "developer".into(),
+            secret: String::new(),
+        };
+        let value: Value = serde_json::from_str(
+            r#"{
+                "quota_snapshots":{"premium_interactions":{
+                    "credits_used":"NaN",
+                    "quota_remaining":199498.6,
+                    "entitlement":200000
+                }}
+            }"#,
+        )
+        .unwrap();
+
+        let snapshot = github_copilot_quota_snapshot(&account, &value).expect("allowance snapshot");
+        assert_eq!(snapshot.metrics.len(), 2);
+        assert!(snapshot
+            .metrics
+            .iter()
+            .all(|metric| metric.label != "GitHub-reported credits_used (AIC)"));
+    }
+
+    #[test]
+    fn maps_gross_aic_and_net_billed_spend_from_billing_reports() {
+        let items: Vec<Value> = serde_json::from_str(
+            r#"[
+                {
+                    "grossQuantity":12,
+                    "netQuantity":3,
+                    "grossAmount":9,
+                    "netAmount":2.5
+                },
+                {
+                    "gross_quantity":"8",
+                    "net_quantity":1,
+                    "net_amount":"1.25"
+                }
+            ]"#,
+        )
+        .unwrap();
+
+        let metrics = github_billing_metrics(&items);
+        assert_eq!(metrics.len(), 2);
+        assert_eq!(metrics[0].label, "AIC consumed");
+        assert_eq!(metrics[0].unit, "AIC");
+        assert_eq!(metrics[0].consumed, 20.0);
+        assert_eq!(metrics[1].label, "Actual billed spend");
+        assert_eq!(metrics[1].unit, "USD");
+        assert_eq!(metrics[1].consumed, 3.75);
     }
 }

@@ -1,10 +1,10 @@
 # AI Allowance
 
 A Windows-first system-tray and detachable desktop widget for viewing
-authoritative AI usage, spend, quota, and reset data across GitHub Copilot,
-Anthropic, and OpenAI.
+authoritative AI usage, billed cost, quota, and reset data across GitHub
+Copilot, Anthropic, and OpenAI.
 
-Current version: **0.1.0**
+Current version: **0.1.1**
 
 ## Principles
 
@@ -14,6 +14,7 @@ Current version: **0.1.0**
 - Credentials stay in Windows Credential Manager.
 - Provider metrics remain separate when their units are incompatible.
 - Missing limits are shown as unavailable rather than estimated.
+- Provider quota value is never labeled as actual spend.
 
 ## Development
 
@@ -49,9 +50,29 @@ gh auth refresh -h github.com -s user
 
 For an authenticated Copilot account, the app first reads Copilot's own quota
 snapshot through the GitHub account used by `gh api`. When GitHub returns an
-allowance, the card shows the reported AI-credit entitlement, remaining amount,
-USD equivalent, usage counter, and reset date. GitHub defines one AI credit as
-`$0.01 USD`; the app does not configure or assume the allowance.
+allowance, the card shows the AIC entitlement, remaining AIC, derived AIC used,
+used quota value in USD, GitHub's separately reported `credits_used` counter,
+and reset date. Derived usage uses `entitlement - remaining` because those
+fields define the current allowance balance. GitHub defines one AI credit
+(AIC) as `$0.01` of quota value; that conversion is not actual billed spend.
+
+## Quota value versus actual spend
+
+Copilot quota and billing reports describe different amounts:
+
+- Copilot entitlement, remaining, and AIC usage are allowance counters. Their
+  USD equivalent is quota value, not a charge.
+- GitHub billing usage reports use `grossQuantity` for total AIC consumed and
+  `netAmount` for actual billed spend.
+- Anthropic and OpenAI organization cost APIs report costs independently from
+  personal-plan allowances.
+
+Power BI **My AI Usage** is a separate cross-ecosystem report for linked
+Microsoft 365 and GitHub accounts. It can report actual spend, tokens,
+requests, and active days, but does not provide the Copilot entitlement,
+remaining quota, reset date, or AIC allowance fields used here. AI Allowance
+does not currently import Power BI data, so Copilot quota value must not be
+compared to Power BI spend as though they were the same metric.
 
 ## Combined selected usage
 
@@ -81,7 +102,8 @@ Aggregation preserves provider units:
 
 When a metric supplies an explicit remaining value, used is derived as
 `limit - remaining`; that takes precedence over the source-reported consumed
-value. Unlike units are never added together.
+value. Each used amount is clamped to its own `[0, limit]` range before
+aggregation. Unlike units are never added together.
 
 The former **Most constrained allowance** summary selected the single lowest
 remaining percentage. It was removed because one account's minimum did not

@@ -69,9 +69,11 @@ const demoDashboard: Dashboard = {
       updatedAt: new Date().toISOString(),
       resetAt: new Date(Date.now() + 12 * 86_400_000).toISOString(),
       metrics: [
-        { kind: "credits", label: "AI credits", unit: "credits", consumed: 612, limit: 1000, remaining: 388 },
-        { kind: "currency", label: "Additional spend", unit: "USD", consumed: 3.24 },
+        { kind: "credits", label: "Copilot allowance (AIC)", unit: "AIC", consumed: 612, limit: 1000, remaining: 388 },
+        { kind: "currency", label: "Used quota value (USD equivalent)", unit: "USD", consumed: 6.12 },
+        { kind: "credits", label: "GitHub-reported credits_used (AIC)", unit: "AIC", consumed: 610 },
       ],
+      message: "Copilot AIC and its USD equivalent are quota values, not billed spend. Power BI spend is not currently imported.",
     },
     {
       accountId: "demo-anthropic",
@@ -117,13 +119,27 @@ function isTauri() {
 
 function formatNumber(value: number, unit: string) {
   if (unit === "USD") {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 3,
+    }).format(value);
   }
   return new Intl.NumberFormat("en-US", {
-    notation: value >= 100_000 ? "compact" : "standard",
-    minimumFractionDigits: unit === "AIC" ? 2 : 0,
+    notation: unit !== "AIC" && value >= 100_000 ? "compact" : "standard",
+    minimumFractionDigits: 0,
     maximumFractionDigits: unit === "AIC" ? 2 : 1,
   }).format(value);
+}
+
+export function formatPercentage(value: number) {
+  const safe = Math.max(0, Math.min(100, value));
+  if (safe === 0 || safe === 100) return `${safe}%`;
+  const rounded = Math.round(safe * 100) / 100;
+  if (rounded === 0) return "<0.01%";
+  if (rounded >= 100) return "99.99%";
+  return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(rounded)}%`;
 }
 
 function formatResetDate(resetAt: string) {
@@ -155,14 +171,21 @@ interface RefreshPreference {
 
 export function metricUsedAmount(metric: AllowanceMetric) {
   if (metric.limit === undefined || !Number.isFinite(metric.limit) || metric.limit <= 0) return undefined;
-  if (metric.remaining !== undefined && Number.isFinite(metric.remaining)) {
-    return metric.limit - metric.remaining;
-  }
-  return Number.isFinite(metric.consumed) ? metric.consumed : undefined;
+  const used = metric.remaining !== undefined && Number.isFinite(metric.remaining)
+    ? metric.limit - metric.remaining
+    : Number.isFinite(metric.consumed)
+      ? metric.consumed
+      : undefined;
+  return used === undefined ? undefined : Math.max(0, Math.min(metric.limit, used));
+}
+
+function metricRemainingAmount(metric: AllowanceMetric) {
+  const used = metricUsedAmount(metric);
+  return used === undefined || metric.limit === undefined ? undefined : metric.limit - used;
 }
 
 export function isEligibleSnapshot(snapshot: ProviderSnapshot) {
-  return snapshot.metrics.some((metric) => metric.limit !== undefined && Number.isFinite(metric.limit) && metric.limit > 0);
+  return snapshot.metrics.some((metric) => metricUsedAmount(metric) !== undefined);
 }
 
 export function calculateCombinedUsage(snapshots: ProviderSnapshot[]): CombinedUsage {
@@ -240,8 +263,9 @@ function Hourglass({ percentage, compact = false }: { percentage?: number; compa
   const status = percentage === undefined ? "unknown" : safe >= 90 ? "critical" : safe >= 75 ? "warning" : "healthy";
   const topHeight = 58 * (100 - safe) / 100;
   const bottomHeight = 58 * safe / 100;
+  const formattedPercentage = percentage === undefined ? undefined : formatPercentage(safe);
   return (
-    <div className={`hourglass ${compact ? "hourglass--compact" : ""} hourglass--${status}`} role="img" aria-label={percentage === undefined ? "Combined usage unavailable" : `${Math.round(percentage)} percent used`}>
+    <div className={`hourglass ${compact ? "hourglass--compact" : ""} hourglass--${status}`} role="img" aria-label={formattedPercentage === undefined ? "Combined usage unavailable" : `${formattedPercentage.replace("%", " percent")} used`}>
       <div className="hourglass__glow" />
       <svg viewBox="0 0 160 210" aria-hidden="true">
         <defs>
@@ -285,7 +309,7 @@ function Hourglass({ percentage, compact = false }: { percentage?: number; compa
         <path className="hourglass__rod" d="M31 31 L47 180 M129 31 L113 180" />
         <path className="hourglass__shine" d="M54 43 C56 68 65 81 75 94" />
       </svg>
-      <strong>{percentage === undefined ? "—" : `${Math.round(percentage)}%`}</strong>
+      <strong>{formattedPercentage ?? "—"}</strong>
     </div>
   );
 }
@@ -308,7 +332,7 @@ function ProviderCard({ snapshot }: { snapshot: ProviderSnapshot }) {
           <p>{snapshot.scope}</p>
         </div>
         <div className="provider-state">
-          {percentage !== undefined && <strong>{Math.round(percentage)}% used</strong>}
+          {percentage !== undefined && <strong>{formatPercentage(percentage)} used</strong>}
           <small className={`connection-label connection-label--${snapshot.freshness}`}>
             <span className={`status-dot status-dot--${snapshot.freshness}`} aria-hidden="true" />
             {statusLabel}
@@ -320,12 +344,13 @@ function ProviderCard({ snapshot }: { snapshot: ProviderSnapshot }) {
         <div className="provider-content">
           <div className="metric-list">
             {snapshot.metrics.map((metric) => {
-              const remaining = metric.remaining ?? (metric.limit !== undefined ? Math.max(0, metric.limit - metric.consumed) : undefined);
+              const used = metricUsedAmount(metric);
+              const remaining = metricRemainingAmount(metric);
               return (
                 <div className="metric" key={`${metric.kind}-${metric.label}`}>
                   <span>{metric.label}</span>
                   <strong>{remaining !== undefined ? `${formatNumber(remaining, metric.unit)} left` : formatNumber(metric.consumed, metric.unit)}</strong>
-                  {metric.limit !== undefined && <small>{formatNumber(metric.consumed, metric.unit)} used of {formatNumber(metric.limit, metric.unit)}</small>}
+                  {used !== undefined && metric.limit !== undefined && <small>{formatNumber(used, metric.unit)} used of {formatNumber(metric.limit, metric.unit)}</small>}
                 </div>
               );
             })}
@@ -659,7 +684,6 @@ function App() {
   const liveAic = dashboard.providers
     .flatMap((provider) => provider.metrics)
     .find((metric) => metric.unit === "AIC");
-  const spent = selectedProviders.flatMap((provider) => provider.metrics).filter((metric) => metric.kind === "currency").reduce((sum, metric) => sum + metric.consumed, 0);
   const nearestReset = nearestResetAt(selectedProviders);
 
   async function loadDashboard(refresh = false) {
@@ -839,7 +863,7 @@ function App() {
           <section className="summary">
             <div className="summary-copy">
               <span className="eyebrow">Combined selected usage</span>
-              <h2>{overall === undefined ? "Usage unavailable" : `${Math.round(overall)}% used`}</h2>
+              <h2>{overall === undefined ? "Usage unavailable" : `${formatPercentage(overall)} used`}</h2>
               <p>{overall === undefined
                 ? eligibleProviders.length
                   ? "Select at least one eligible account in Settings to calculate combined usage."
@@ -850,7 +874,7 @@ function App() {
                       : "Connect an account with an official usage limit."
                 : "For each unit, used amounts and limits are summed across selected accounts; those unit percentages are then averaged equally. Reported remaining values take precedence when deriving used amounts."}</p>
               <div className="summary-stats">
-                <div><span>Selected spend</span><strong>{formatNumber(spent, "USD")}</strong></div>
+                <div><span>Next reset</span><strong>{nearestReset ? `${formatResetDate(nearestReset)} UTC` : "Unavailable"}</strong></div>
                 <div><span>Selected accounts</span><strong>{selectedProviders.length} / {eligibleProviders.length}</strong></div>
                 <div><span>Last sync</span><strong>{new Date(dashboard.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</strong></div>
               </div>
