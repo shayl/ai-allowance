@@ -6,6 +6,28 @@ The project follows Semantic Versioning. Dates use the ISO `YYYY-MM-DD` format.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-19
+
+### Changed
+
+- Show every discovered local account or credential as a manual connection
+  suggestion instead of connecting any provider automatically.
+- Add contextual connection guides to discovered accounts, connected accounts,
+  and each provider/account-type combination in the manual connection dialog.
+- Rewrite connection guides as step-by-step account-portal instructions, add
+  account disconnection, and hide connected accounts from local suggestions.
+- Omit Claude Code and Claude Desktop because their personal sign-ins cannot
+  provide allowance data; Anthropic Admin API connections remain available.
+- Make Anthropic and OpenAI manual setup organization-only so their Admin API
+  key instructions appear as soon as the provider is selected.
+- Open account-setting links from connection guides in the system browser.
+- Expand Anthropic organization reporting with documented token categories and
+  web-search usage, convert cost cents to dollars, request the full monthly
+  window, and distinguish a valid zero-activity report from missing data.
+- Add a direct Claude Console billing link to connected Anthropic cards.
+- Show all connected accounts in the combined-usage selector and clearly
+  disable accounts that have no provider-reported allowance limit.
+
 ## [0.1.1] - 2026-09-17
 
 ### Fixed
@@ -41,6 +63,7 @@ The project follows Semantic Versioning. Dates use the ISO `YYYY-MM-DD` format.
 - SQLite history foundations and Windows Credential Manager secret storage.
 - MSI, NSIS, and portable executable packaging.
 
-[Unreleased]: https://github.com/shayl/ai-allowance/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/shayl/ai-allowance/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/shayl/ai-allowance/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/shayl/ai-allowance/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/shayl/ai-allowance/releases/tag/v0.1.0

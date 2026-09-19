@@ -37,7 +37,9 @@ impl Storage {
                status TEXT NOT NULL,
                message TEXT,
                created_at TEXT NOT NULL
-             );",
+             );
+             DELETE FROM snapshots WHERE account_id='anthropic-local';
+             DELETE FROM provider_accounts WHERE id='anthropic-local';",
         )?;
         Ok(Self { connection })
     }

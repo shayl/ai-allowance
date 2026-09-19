@@ -96,7 +96,7 @@ fn discover_local_accounts() -> Vec<LocalAccountCandidate> {
             source: "GitHub CLI".into(),
             can_connect: true,
             connected: false,
-            message: "Uses the existing GitHub CLI login through `gh api`; the OAuth token is never copied into AI Allowance.".into(),
+            message: "Found an authenticated GitHub CLI account. Review it and choose Connect to use it; the OAuth token is never copied into AI Allowance.".into(),
         });
     }
 
@@ -113,84 +113,55 @@ fn discover_local_accounts() -> Vec<LocalAccountCandidate> {
                 source: "Environment variable".into(),
                 can_connect: true,
                 connected: false,
-                message: format!("Uses {variable} directly from the app environment; the key is not copied into SQLite or the credential vault."),
+                message: format!("Can use {variable} directly from the app environment after you choose Connect; the key is not copied into SQLite or the credential vault."),
             });
         }
     }
 
-    for (command, provider, label) in [
-        ("claude", "anthropic", "Claude Code"),
-        ("codex", "openai", "Codex CLI"),
-    ] {
-        if std::process::Command::new(command)
-            .arg("--version")
-            .output()
-            .is_ok()
-        {
-            candidates.push(LocalAccountCandidate {
-                id: format!("{provider}-local"),
-                provider: provider.into(),
-                label: label.into(),
-                account: "Local CLI installation".into(),
-                source: format!("{label} CLI"),
-                can_connect: false,
-                connected: false,
-                message: "Installed, but its local consumer login is not imported because no documented third-party allowance API is available.".into(),
-            });
-        }
+    if std::process::Command::new("codex")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        candidates.push(LocalAccountCandidate {
+            id: "openai-local".into(),
+            provider: "openai".into(),
+            label: "Codex CLI".into(),
+            account: "Local CLI installation".into(),
+            source: "Codex CLI".into(),
+            can_connect: false,
+            connected: false,
+            message: "Installed, but its local consumer login is not imported because no documented third-party allowance API is available.".into(),
+        });
     }
     candidates
 }
 
-#[tauri::command]
-fn auto_wire_local_accounts(
-    state: State<'_, AppState>,
-) -> Result<Vec<LocalAccountCandidate>, String> {
-    let candidates = discover_local_accounts();
-    let storage = state
-        .storage
-        .lock()
-        .map_err(|_| "Storage lock failed".to_string())?;
-    let mut results = Vec::new();
-    for mut candidate in candidates {
-        if candidate.can_connect {
-            let scope_type = if candidate.source == "GitHub CLI" {
-                "local_cli"
-            } else {
-                "local_env"
-            };
-            storage.save_account(&ProviderAccount {
-                id: candidate.id.clone(),
-                provider: candidate.provider.clone(),
-                label: candidate.label.clone(),
-                scope_type: scope_type.into(),
-                scope: candidate.account.clone(),
-                secret: String::new(),
-            })?;
-            candidate.connected = true;
-        }
-        results.push(candidate);
+fn local_account_scope_type(candidate: &LocalAccountCandidate) -> &'static str {
+    if candidate.source.ends_with("CLI") {
+        "local_cli"
+    } else {
+        "local_env"
     }
-    Ok(results)
 }
 
 #[tauri::command]
 fn connect_local_account(candidate_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    let login = models::github_cli_login()?;
-    let expected_id = format!("github-local-{login}");
-    if candidate_id != expected_id {
-        return Err("The discovered account changed. Run discovery again.".into());
-    }
+    let candidate = discover_local_accounts()
+        .into_iter()
+        .find(|candidate| candidate.id == candidate_id && candidate.can_connect)
+        .ok_or_else(|| "The discovered account changed. Run discovery again.".to_string())?;
+    let scope_type = local_account_scope_type(&candidate).to_string();
     state
         .storage
         .lock()
         .map_err(|_| "Storage lock failed".to_string())?
         .save_account(&ProviderAccount {
-            id: expected_id,
-            provider: "github".into(),
-            label: "GitHub Copilot".into(),
-            scope_type: "local_cli".into(),
-            scope: login,
+            id: candidate.id,
+            provider: candidate.provider,
+            label: candidate.label,
+            scope_type,
+            scope: candidate.account,
             secret: String::new(),
         })
 }
@@ -215,6 +186,7 @@ fn ensure_widget(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let storage = Storage::new(app.path().app_data_dir()?)?;
             app.manage(AppState {
@@ -290,7 +262,6 @@ pub fn run() {
             save_account,
             delete_account,
             discover_local_accounts,
-            auto_wire_local_accounts,
             connect_local_account,
             set_widget_visible
         ])

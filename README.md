@@ -4,7 +4,7 @@ A Windows-first system-tray and detachable desktop widget for viewing
 authoritative AI usage, billed cost, quota, and reset data across GitHub
 Copilot, Anthropic, and OpenAI.
 
-Current version: **0.1.1**
+Current version: **0.2.0**
 
 ## Principles
 
@@ -31,14 +31,29 @@ reviewed without credentials. Native account connections persist configuration
 in SQLite and secrets in Windows Credential Manager.
 
 The native app never displays demo usage as real data. On every startup it
-automatically wires safe, reusable local authentication paths:
+discovers reusable local authentication paths and suggests them in Settings.
+Nothing found on the machine is connected automatically:
 
-- A logged-in GitHub CLI account is registered and queried through `gh api`;
-  its OAuth token is never copied.
-- `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` are used directly when inherited by
-  the desktop process; their values are never copied into SQLite.
-- Claude Code and Codex consumer logins are detected when their CLIs are
-  installed, but private credential files are not read.
+- `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` are suggested when inherited by the
+  desktop process; their values are never copied into SQLite.
+- Logged-in GitHub CLI accounts are suggested without copying the OAuth token.
+- Installed Codex CLI accounts are reported even though their consumer login
+  cannot currently be imported.
+
+Claude Code and Claude Desktop are not shown because their personal sign-ins
+cannot provide allowance data. Anthropic organization usage and cost remain
+available through an Admin API key.
+
+Choosing **Connect** explicitly registers a usable suggestion.
+Every discovered and connected account includes an expandable **How to
+connect** guide. The manual provider dialog also updates its instructions for
+the selected provider and personal or organization account type. Connected
+accounts can be disconnected from Settings; once connected, the same account
+is hidden from **Found on this machine** until it is disconnected.
+Anthropic and OpenAI manual connections are organization-only, so selecting
+either provider immediately shows its Admin API key instructions instead of an
+unsupported personal-account form. Account-setting links in the guides open in
+the system browser.
 
 GitHub's personal AI-credit report requires the local GitHub CLI token to have
 the `user` OAuth scope. If the account card reports that this scope is missing,
@@ -79,6 +94,9 @@ compared to Power BI spend as though they were the same metric.
 The overall value is **Combined selected usage**. Only account snapshots with
 an authoritative positive limit are eligible. Users can choose which eligible
 accounts are included from **Settings**, and the selection persists locally.
+All connected accounts appear in the selector; accounts without a
+provider-reported limit are disabled with an explanation because they cannot
+produce a meaningful usage percentage.
 Provider-account creation and local-account discovery also live in Settings so
 the dashboard remains focused on usage and status. **Use all
 automatically** resets the preference so all currently and subsequently
@@ -166,3 +184,11 @@ the three artifacts automatically. See
 Personal Claude Pro/Max and ChatGPT/Codex allowance cards intentionally report
 that the metric is unavailable because no documented third-party account API is
 used.
+
+Anthropic organization connections report current-month API cost in USD,
+uncached input tokens, cache-creation tokens, cache-read tokens, output tokens,
+total tokens, and web-search requests. Anthropic reports cost amounts in cents,
+which AI Allowance converts to dollars. Empty reports are shown as a successful
+connection with no organization API activity rather than as missing data.
+Each Anthropic card links directly to Claude Console billing so the current
+prepaid balance can be checked or updated at its authoritative source.

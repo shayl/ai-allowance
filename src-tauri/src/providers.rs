@@ -262,8 +262,8 @@ async fn anthropic(account: &ProviderAccount) -> Result<ProviderSnapshot, String
     }
     let (start, end) = current_month_bounds();
     let client = Client::new();
-    let cost_url = format!("https://api.anthropic.com/v1/organizations/cost_report?starting_at={start}&ending_at={end}&bucket_width=1d");
-    let usage_url = format!("https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at={start}&ending_at={end}&bucket_width=1d");
+    let cost_url = format!("https://api.anthropic.com/v1/organizations/cost_report?starting_at={start}&ending_at={end}&bucket_width=1d&limit=31");
+    let usage_url = format!("https://api.anthropic.com/v1/organizations/usage_report/messages?starting_at={start}&ending_at={end}&bucket_width=1d&limit=31");
     let request = |url: String| {
         client
             .get(url)
@@ -290,20 +290,89 @@ async fn anthropic(account: &ProviderAccount) -> Result<ProviderSnapshot, String
             .await
         }
     )?;
-    let cost = recursive_sum(&cost_json, &["amount", "cost"]);
-    let tokens = recursive_sum(
-        &usage_json,
-        &[
-            "input_tokens",
-            "output_tokens",
-            "cache_creation_input_tokens",
-            "cache_read_input_tokens",
-        ],
+    let metrics = anthropic_metrics(&cost_json, &usage_json);
+    let has_activity = metrics.iter().any(|metric| metric.consumed > 0.0);
+    let message = if has_activity {
+        "Anthropic reports this month's organization API usage and cost. These values do not include Claude web, Desktop, or personal Pro/Max activity, and the API does not provide a remaining balance."
+    } else {
+        "Connected successfully, but Anthropic reports no organization API activity for this month. Claude web, Desktop, and personal Pro/Max activity are not included in this API."
+    };
+    Ok(snapshot(account, metrics, Some(message.into())))
+}
+
+fn anthropic_metrics(cost_json: &Value, usage_json: &Value) -> Vec<AllowanceMetric> {
+    let cost_usd = recursive_sum(cost_json, &["amount"]) / 100.0;
+    let uncached_input = recursive_sum(usage_json, &["uncached_input_tokens"]);
+    let cache_creation = recursive_sum(
+        usage_json,
+        &["ephemeral_1h_input_tokens", "ephemeral_5m_input_tokens"],
     );
-    Ok(snapshot(account, vec![
-        AllowanceMetric { kind: "currency".into(), label: "Current period".into(), unit: "USD".into(), consumed: cost, limit: None, remaining: None },
-        AllowanceMetric { kind: "tokens".into(), label: "Tokens used".into(), unit: "tokens".into(), consumed: tokens, limit: None, remaining: None },
-    ], Some("Anthropic Admin APIs report organization usage and cost, but do not imply a prepaid balance.".into())))
+    let cache_read = recursive_sum(usage_json, &["cache_read_input_tokens"]);
+    let output = recursive_sum(usage_json, &["output_tokens"]);
+    let total_tokens = uncached_input + cache_creation + cache_read + output;
+    let web_searches = recursive_sum(usage_json, &["web_search_requests"]);
+
+    let mut metrics = vec![
+        AllowanceMetric {
+            kind: "currency".into(),
+            label: "API cost this month".into(),
+            unit: "USD".into(),
+            consumed: cost_usd,
+            limit: None,
+            remaining: None,
+        },
+        AllowanceMetric {
+            kind: "tokens".into(),
+            label: "Total API tokens".into(),
+            unit: "tokens".into(),
+            consumed: total_tokens,
+            limit: None,
+            remaining: None,
+        },
+        AllowanceMetric {
+            kind: "tokens".into(),
+            label: "Uncached input".into(),
+            unit: "tokens".into(),
+            consumed: uncached_input,
+            limit: None,
+            remaining: None,
+        },
+        AllowanceMetric {
+            kind: "tokens".into(),
+            label: "Output".into(),
+            unit: "tokens".into(),
+            consumed: output,
+            limit: None,
+            remaining: None,
+        },
+        AllowanceMetric {
+            kind: "tokens".into(),
+            label: "Cache creation".into(),
+            unit: "tokens".into(),
+            consumed: cache_creation,
+            limit: None,
+            remaining: None,
+        },
+        AllowanceMetric {
+            kind: "tokens".into(),
+            label: "Cache reads".into(),
+            unit: "tokens".into(),
+            consumed: cache_read,
+            limit: None,
+            remaining: None,
+        },
+    ];
+    if web_searches > 0.0 {
+        metrics.push(AllowanceMetric {
+            kind: "requests".into(),
+            label: "Web searches".into(),
+            unit: "requests".into(),
+            consumed: web_searches,
+            limit: None,
+            remaining: None,
+        });
+    }
+    metrics
 }
 
 async fn openai(account: &ProviderAccount) -> Result<ProviderSnapshot, String> {
@@ -431,6 +500,33 @@ mod tests {
 
         let non_finite: Value = serde_json::from_str(r#"{"credits_used":"NaN"}"#).unwrap();
         assert_eq!(optional_number(&non_finite, &["credits_used"]), None);
+    }
+
+    #[test]
+    fn maps_anthropic_cost_cents_and_token_breakdown() {
+        let cost: Value = serde_json::from_str(
+            r#"{"data":[{"results":[{"amount":"123.45","currency":"USD"}]}]}"#,
+        )
+        .unwrap();
+        let usage: Value = serde_json::from_str(
+            r#"{"data":[{"results":[{
+                "uncached_input_tokens":1500,
+                "cache_creation":{"ephemeral_1h_input_tokens":10,"ephemeral_5m_input_tokens":20},
+                "cache_read_input_tokens":200,
+                "output_tokens":500,
+                "server_tool_use":{"web_search_requests":3}
+            }]}]}"#,
+        )
+        .unwrap();
+
+        let metrics = anthropic_metrics(&cost, &usage);
+        assert_eq!(metrics[0].consumed, 1.2345);
+        assert_eq!(metrics[1].consumed, 2230.0);
+        assert_eq!(metrics[2].consumed, 1500.0);
+        assert_eq!(metrics[3].consumed, 500.0);
+        assert_eq!(metrics[4].consumed, 30.0);
+        assert_eq!(metrics[5].consumed, 200.0);
+        assert_eq!(metrics[6].consumed, 3.0);
     }
 
     #[test]

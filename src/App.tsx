@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import "./App.css";
 
 type Provider = "github" | "anthropic" | "openai";
@@ -41,7 +42,7 @@ interface AccountInput {
   secret: string;
 }
 
-interface LocalAccountCandidate {
+export interface LocalAccountCandidate {
   id: string;
   provider: Provider;
   label: string;
@@ -113,8 +114,153 @@ const providerMarks: Record<Provider, string> = {
   openai: "OA",
 };
 
+function ConnectionGuide({ steps, compact = false }: { steps: string[]; compact?: boolean }) {
+  return (
+    <details className={`connection-guide${compact ? " connection-guide--compact" : ""}`}>
+      <summary>How to connect</summary>
+      <ol>
+        {steps.map((step) => <li key={step}><LinkifiedGuideStep text={step} /></li>)}
+      </ol>
+    </details>
+  );
+}
+
+function LinkifiedGuideStep({ text }: { text: string }) {
+  return text.split(/(https:\/\/[^\s]+)/).map((part, index) => {
+    if (!part.startsWith("https://")) return part;
+    const url = part.replace(/[),.;]+$/, "");
+    const trailing = part.slice(url.length);
+    return (
+      <span key={`${url}-${index}`}>
+        <a
+          href={url}
+          onClick={(event) => {
+            event.preventDefault();
+            if (isTauri()) void openUrl(url);
+            else window.open(url, "_blank", "noopener,noreferrer");
+          }}
+        >
+          {url.replace("https://", "")}
+        </a>
+        {trailing}
+      </span>
+    );
+  });
+}
+
+function discoveredAccountGuide(candidate: LocalAccountCandidate) {
+  if (candidate.source === "GitHub CLI") {
+    return [
+      "Check that the username shown here is your GitHub account.",
+      "Choose Connect. AI Allowance asks GitHub CLI for usage and never copies your login.",
+      "If the account later says it needs permission, open PowerShell, run gh auth refresh -h github.com -s user, and approve the browser prompt.",
+      "If your employer pays for Copilot, ask an organization administrator for access to its billing report and add that organization separately.",
+    ];
+  }
+  if (candidate.source === "Environment variable") {
+    return candidate.provider === "anthropic"
+      ? [
+          "This key is already available to AI Allowance. Confirm it belongs to the organization you want to monitor.",
+          "Choose Connect. The key stays in the computer environment and is not copied into AI Allowance's database.",
+          "If it fails, ask your Claude organization administrator to create an Admin key in Claude Console → Settings → Admin keys.",
+          "A personal Claude subscription key or a normal workspace key will not work for organization reports.",
+        ]
+      : [
+          "This key is already available to AI Allowance. Confirm it belongs to the OpenAI organization you want to monitor.",
+          "Choose Connect. The key stays in the computer environment and is not copied into AI Allowance's database.",
+          "If it fails, ask an OpenAI Organization Owner to create an Admin key in Platform → Organization settings → Admin keys.",
+          "A project key or normal API key will not work for organization reports.",
+        ];
+  }
+  return [
+    "The Codex or ChatGPT sign-in cannot be copied into AI Allowance, so this entry cannot be connected.",
+    "For company API usage, ask an OpenAI Organization Owner to open the OpenAI Platform.",
+    "They should choose Organization settings → Admin keys → Create Admin key and give you the new key securely.",
+    "Choose Add provider account, select OpenAI and Organization, enter the organization ID, and paste that Admin key.",
+  ];
+}
+
+function manualAccountGuide(form: AccountInput) {
+  if (form.provider === "github") {
+    return form.scopeType === "organization"
+      ? [
+          "Sign in at github.com with an account that is an administrator of the organization.",
+          "Click your profile picture → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token.",
+          "For Resource owner, choose the organization. Under Organization permissions, give Administration read-only access.",
+          "Create the token and copy it immediately; GitHub shows the full token only once.",
+          "Enter the organization name from its GitHub web address, paste the token below, and choose Save account.",
+          "If your organization requires approval or single sign-on, complete that approval in GitHub before refreshing.",
+        ]
+      : [
+          "Easiest option: use Scan this machine and choose Connect beside your GitHub account.",
+          "For a manual token, sign in at github.com and click your profile picture → Settings → Developer settings.",
+          "Choose Personal access tokens → Tokens (classic) → Generate new token (classic).",
+          "Select the user permission, create the token, and copy it immediately; GitHub shows it only once.",
+          "Enter your GitHub username, paste the token below, and choose Save account.",
+          "This works only when you personally pay for Copilot. Company-paid Copilot needs an Organization connection.",
+        ];
+  }
+  if (form.provider === "anthropic") {
+    return form.scopeType === "organization"
+      ? [
+          "Sign in at platform.claude.com with a Claude Console organization account. You must have the Admin role.",
+          "Open Settings → Admin keys, or go directly to platform.claude.com/settings/admin-keys.",
+          "Choose Create key, enter a name such as AI Allowance, choose when it should expire, and create it.",
+          "Copy the key immediately. It begins with sk-ant-admin01-, and Claude shows the full key only once.",
+          "Enter your organization name or ID below, paste the key, and choose Save account.",
+          "A normal Claude API key will not work here. This connection reports organization usage and cost, not personal Pro/Max allowance.",
+        ]
+      : [
+          "A personal Claude Pro or Max account does not have an API key that reveals its remaining allowance.",
+          "For company usage and cost, change Account type to Organization and ask a Claude Console administrator for an Admin key.",
+        ];
+  }
+  return form.scopeType === "organization"
+    ? [
+        "Sign in at platform.openai.com with an account that is an Organization Owner.",
+        "Click the settings icon → Organization → Admin keys, or go to platform.openai.com/settings/organization/admin-keys.",
+        "Choose Create Admin key, enter a name such as AI Allowance, choose an expiration, and create it.",
+        "Copy the key immediately; OpenAI will not show the complete key again.",
+        "Copy the Organization ID from Organization → General, enter it below, paste the Admin key, and choose Save account.",
+        "A normal project API key will not work for organization-wide usage and cost.",
+      ]
+    : [
+        "A personal ChatGPT or Codex account does not provide an API key that reveals its remaining subscription allowance.",
+        "Do not paste a ChatGPT password, browser cookie, or ordinary project API key.",
+        "For company API usage and cost, change Account type to Organization and ask an OpenAI Organization Owner to create an Admin key.",
+      ];
+}
+
+function connectedAccountGuide(snapshot: ProviderSnapshot) {
+  if (snapshot.accountId.startsWith("github-local-")) {
+    return discoveredAccountGuide({
+      id: snapshot.accountId,
+      provider: "github",
+      label: snapshot.label,
+      account: snapshot.scope,
+      source: "GitHub CLI",
+      canConnect: true,
+      connected: true,
+      message: "",
+    });
+  }
+  return [
+    `This account uses a saved ${providerNames[snapshot.provider]} credential from Windows Credential Manager.`,
+    "To replace it, first revoke the old key in the provider's account settings.",
+    "Choose Disconnect here, then choose Add provider account and follow the on-screen guide to create and save a replacement.",
+  ];
+}
+
 function isTauri() {
   return "__TAURI_INTERNALS__" in window;
+}
+
+export function filterDisconnectedCandidates(
+  candidates: LocalAccountCandidate[],
+  providers: ProviderSnapshot[],
+) {
+  const connectedIds = new Set(providers.map((provider) => provider.accountId));
+  return candidates.filter((candidate) => !connectedIds.has(candidate.id));
 }
 
 function formatNumber(value: number, unit: string) {
@@ -370,6 +516,19 @@ function ProviderCard({ snapshot }: { snapshot: ProviderSnapshot }) {
       )}
 
       {snapshot.metrics.length > 0 && snapshot.message && <p className="provider-note">{snapshot.message}</p>}
+      {snapshot.provider === "anthropic" && (
+        <a
+          className="provider-external-link"
+          href="https://platform.claude.com/settings/billing"
+          onClick={(event) => {
+            event.preventDefault();
+            if (isTauri()) void openUrl("https://platform.claude.com/settings/billing");
+            else window.open("https://platform.claude.com/settings/billing", "_blank", "noopener,noreferrer");
+          }}
+        >
+          Check/update in Claude Console
+        </a>
+      )}
       <footer>
         <span>Updated {new Date(snapshot.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
         {snapshot.resetAt && <span>Resets {formatResetDate(snapshot.resetAt)} UTC</span>}
@@ -412,26 +571,39 @@ function AccountDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () 
         <label>Provider
           <select value={form.provider} onChange={(event) => {
             const provider = event.target.value as Provider;
-            setForm({ ...form, provider, label: providerNames[provider] });
+            setForm({
+              ...form,
+              provider,
+              label: providerNames[provider],
+              scopeType: provider === "github" ? "personal" : "organization",
+            });
           }}>
             <option value="github">GitHub Copilot</option>
             <option value="anthropic">Anthropic Claude API</option>
             <option value="openai">OpenAI API</option>
           </select>
         </label>
-        <label>Account type
-          <select value={form.scopeType} onChange={(event) => setForm({ ...form, scopeType: event.target.value as AccountInput["scopeType"] })}>
-            <option value="personal">Personal</option>
-            <option value="organization">Organization</option>
-          </select>
-        </label>
-        <label>{form.scopeType === "organization" ? "Organization slug / ID" : "Username (GitHub only)"}
-          <input value={form.scope} onChange={(event) => setForm({ ...form, scope: event.target.value })} placeholder={form.scopeType === "organization" ? "my-organization" : "optional"} />
+        {form.provider === "github" ? (
+          <label>Account type
+            <select value={form.scopeType} onChange={(event) => setForm({ ...form, scopeType: event.target.value as AccountInput["scopeType"] })}>
+              <option value="personal">Personal</option>
+              <option value="organization">Organization</option>
+            </select>
+          </label>
+        ) : (
+          <label>Account type
+            <input value="Organization" disabled />
+            <small>Personal subscription usage is not available from this provider's API.</small>
+          </label>
+        )}
+        <ConnectionGuide steps={manualAccountGuide(form)} />
+        <label>{form.scopeType === "organization" ? "Organization name / ID" : "Username (GitHub only)"}
+          <input value={form.scope} onChange={(event) => setForm({ ...form, scope: event.target.value })} placeholder={form.scopeType === "organization" ? "My organization" : "optional"} />
         </label>
         <label>Display name
           <input value={form.label} onChange={(event) => setForm({ ...form, label: event.target.value })} required />
         </label>
-        <label>{form.provider === "github" ? "GitHub token" : "Admin API key"}
+        <label>{form.provider === "github" ? "GitHub token" : form.provider === "anthropic" ? "Anthropic Admin API key (sk-ant-admin…)" : "OpenAI Admin API key"}
           <input type="password" value={form.secret} onChange={(event) => setForm({ ...form, secret: event.target.value })} required autoComplete="off" />
         </label>
         <p className="security-note">The secret is stored in Windows Credential Manager and is never exposed to the webview after saving.</p>
@@ -462,6 +634,7 @@ interface SettingsPageProps {
   onAddAccount: () => void;
   onDiscover: () => void;
   onConnectLocal: (candidate: LocalAccountCandidate) => void;
+  onDisconnect: (provider: ProviderSnapshot) => void;
 }
 
 function SettingsPage({
@@ -481,6 +654,7 @@ function SettingsPage({
   onAddAccount,
   onDiscover,
   onConnectLocal,
+  onDisconnect,
 }: SettingsPageProps) {
   const [section, setSection] = useState<"general" | "accounts" | "appearance">("general");
   const sectionCopy = {
@@ -570,23 +744,35 @@ function SettingsPage({
                 <div>
                   <span className="eyebrow">Included in summary</span>
                   <h2 id="account-selection-title">Allowance accounts</h2>
+                  <p>Choose accounts with a provider-reported limit. Usage-only accounts remain visible below but cannot contribute to a combined percentage.</p>
                 </div>
                 {selectionCustomized && eligibleProviders.length > 0 && (
                   <button className="selection-reset" type="button" onClick={onUseAll}>Use all automatically</button>
                 )}
               </div>
-              {eligibleProviders.length > 0 ? (
+              {providers.length > 0 ? (
                 <div className="account-selection__options">
-                  {eligibleProviders.map((provider) => (
-                    <label className="account-toggle" key={provider.accountId}>
-                      <input type="checkbox" checked={selectedAccountIds.has(provider.accountId)} onChange={() => onToggleSelected(provider.accountId)} />
-                      <span className="account-toggle__control" aria-hidden="true" />
-                      <span className="account-toggle__label"><strong>{provider.label}</strong><small>{provider.scope}</small></span>
-                    </label>
-                  ))}
+                  {providers.map((provider) => {
+                    const eligible = isEligibleSnapshot(provider);
+                    return (
+                      <label className={`account-toggle${eligible ? "" : " account-toggle--disabled"}`} key={provider.accountId}>
+                        <input
+                          type="checkbox"
+                          checked={eligible && selectedAccountIds.has(provider.accountId)}
+                          disabled={!eligible}
+                          onChange={() => onToggleSelected(provider.accountId)}
+                        />
+                        <span className="account-toggle__control" aria-hidden="true" />
+                        <span className="account-toggle__label">
+                          <strong>{provider.label}</strong>
+                          <small>{eligible ? provider.scope : `${provider.scope} · No allowance limit available`}</small>
+                        </span>
+                      </label>
+                    );
+                  })}
                 </div>
               ) : (
-                <p className="account-selection__empty">No accounts with an authoritative positive limit are available.</p>
+                <p className="account-selection__empty">Connect an account to configure the combined summary.</p>
               )}
             </section>
 
@@ -603,11 +789,20 @@ function SettingsPage({
                   {providers.map((provider) => (
                     <div className="managed-account" key={provider.accountId}>
                       <div className={`provider-mark provider-mark--${provider.provider}`}>{providerMarks[provider.provider]}</div>
-                      <div><strong>{provider.label}</strong><small>{provider.scope}</small></div>
-                      <span className={`connection-label connection-label--${provider.freshness}`}>
-                        <i className={`status-dot status-dot--${provider.freshness}`} aria-hidden="true" />
-                        {provider.freshness === "fresh" ? "Connected" : provider.freshness}
-                      </span>
+                      <div>
+                        <strong>{provider.label}</strong>
+                        <small>{provider.scope}</small>
+                        <ConnectionGuide steps={connectedAccountGuide(provider)} compact />
+                      </div>
+                      <div className="managed-account__actions">
+                        <span className={`connection-label connection-label--${provider.freshness}`}>
+                          <i className={`status-dot status-dot--${provider.freshness}`} aria-hidden="true" />
+                          {provider.freshness === "fresh" ? "Connected" : provider.freshness}
+                        </span>
+                        {provider.accountId !== "copilot-cli-local-usage" && (
+                          <button className="disconnect-button" type="button" onClick={() => onDisconnect(provider)}>Disconnect</button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -620,8 +815,16 @@ function SettingsPage({
                   {localAccounts.map((candidate) => (
                     <div className="discovered-account" key={candidate.id}>
                       <div className={`provider-mark provider-mark--${candidate.provider}`}>{providerMarks[candidate.provider]}</div>
-                      <div><strong>{candidate.label} · {candidate.account}</strong><p>{candidate.message}</p></div>
-                      <button className="button button--primary" disabled={!candidate.canConnect} onClick={() => onConnectLocal(candidate)}>
+                      <div>
+                        <strong>{candidate.label} · {candidate.account}</strong>
+                        <p>{candidate.message}</p>
+                        <ConnectionGuide steps={discoveredAccountGuide(candidate)} compact />
+                      </div>
+                      <button
+                        className="button button--primary"
+                        disabled={discovering || !candidate.canConnect}
+                        onClick={() => onConnectLocal(candidate)}
+                      >
                         {candidate.canConnect ? "Connect" : "Not importable"}
                       </button>
                     </div>
@@ -678,6 +881,10 @@ function App() {
     () => eligibleProviders.filter((provider) => selectedAccountIds.has(provider.accountId)),
     [eligibleProviders, selectedAccountIds],
   );
+  const suggestedLocalAccounts = useMemo(
+    () => filterDisconnectedCandidates(localAccounts, dashboard.providers),
+    [dashboard.providers, localAccounts],
+  );
   const combinedUsage = useMemo(() => calculateCombinedUsage(selectedProviders), [selectedProviders]);
   const overall = combinedUsage.percentage;
   const hasAccounts = dashboard.providers.length > 0;
@@ -709,24 +916,35 @@ function App() {
     }
   }
 
-  async function autoWireLocalAccounts() {
-    if (!isTauri()) return;
+  async function connectLocalAccount(candidate: LocalAccountCandidate) {
     setDiscovering(true);
     try {
-      const discovered = await invoke<LocalAccountCandidate[]>("auto_wire_local_accounts");
-      setLocalAccounts(discovered.filter((account) => !account.connected));
+      await invoke("connect_local_account", { candidateId: candidate.id });
+      setLocalAccounts((accounts) => accounts.filter((account) => account.id !== candidate.id));
       await loadDashboard(true);
-    } catch (error) {
-      console.error("Unable to auto-wire local accounts", error);
     } finally {
       setDiscovering(false);
     }
   }
 
-  async function connectLocalAccount(candidate: LocalAccountCandidate) {
-    await invoke("connect_local_account", { candidateId: candidate.id });
-    setLocalAccounts((accounts) => accounts.filter((account) => account.id !== candidate.id));
-    await loadDashboard(true);
+  async function disconnectAccount(provider: ProviderSnapshot) {
+    const confirmed = window.confirm(
+      `Disconnect ${provider.label}? Its saved connection and credential will be removed from AI Allowance.`,
+    );
+    if (!confirmed) return;
+
+    setDiscovering(true);
+    try {
+      await invoke("delete_account", { accountId: provider.accountId });
+      const [nextDashboard, discovered] = await Promise.all([
+        invoke<Dashboard>("get_dashboard"),
+        invoke<LocalAccountCandidate[]>("discover_local_accounts"),
+      ]);
+      setDashboard(nextDashboard);
+      setLocalAccounts(discovered);
+    } finally {
+      setDiscovering(false);
+    }
   }
 
   async function openWidget() {
@@ -778,7 +996,8 @@ function App() {
     };
     window.addEventListener("storage", syncPreferences);
     if (isTauri()) {
-      void autoWireLocalAccounts();
+      void discoverLocalAccounts();
+      void loadDashboard(true);
     } else {
       void loadDashboard();
     }
@@ -829,7 +1048,7 @@ function App() {
           selectionCustomized={selectionPreference.customized}
           refreshPreference={refreshPreference}
           theme={theme}
-          localAccounts={localAccounts}
+          localAccounts={suggestedLocalAccounts}
           discovering={discovering}
           onClose={() => setActivePage("dashboard")}
           onToggleSelected={toggleSelectedAccount}
@@ -839,6 +1058,7 @@ function App() {
           onAddAccount={() => setShowDialog(true)}
           onDiscover={discoverLocalAccounts}
           onConnectLocal={connectLocalAccount}
+          onDisconnect={disconnectAccount}
         />
         {showDialog && <AccountDialog onClose={() => setShowDialog(false)} onSaved={() => loadDashboard(true)} />}
       </main>

@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   calculateCombinedUsage,
+  filterDisconnectedCandidates,
   formatPercentage,
   metricUsedAmount,
   type AllowanceMetric,
+  type LocalAccountCandidate,
   type ProviderSnapshot,
 } from "./App";
 
@@ -29,6 +31,26 @@ describe("calculateCombinedUsage", () => {
 
     expect(result.percentage).toBe(75);
     expect(result.unitPercentages).toEqual({ credits: 75 });
+  });
+
+  describe("filterDisconnectedCandidates", () => {
+    it("hides local suggestions that are already connected", () => {
+      const candidate = (id: string): LocalAccountCandidate => ({
+        id,
+        provider: "anthropic",
+        label: id,
+        account: "Local account",
+        source: "Claude Code CLI",
+        canConnect: true,
+        connected: false,
+        message: "",
+      });
+
+      expect(filterDisconnectedCandidates(
+        [candidate("connected"), candidate("available")],
+        [snapshot("connected", [])],
+      ).map((account) => account.id)).toEqual(["available"]);
+    });
   });
 
   it("weights same-unit usage by aggregating raw used and limits across accounts", () => {
