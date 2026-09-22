@@ -6,6 +6,11 @@ The project follows Semantic Versioning. Dates use the ISO `YYYY-MM-DD` format.
 
 ## [Unreleased]
 
+### Fixed
+
+- Repeat metric units beside displayed values so Copilot AIC entitlement cannot
+  be mistaken for a dollar amount.
+
 ## [0.2.0] - 2026-09-19
 
 ### Changed

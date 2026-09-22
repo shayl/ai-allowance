@@ -279,6 +279,11 @@ function formatNumber(value: number, unit: string) {
   }).format(value);
 }
 
+export function formatMetricAmount(value: number, unit: string) {
+  const formatted = formatNumber(value, unit);
+  return unit === "USD" ? formatted : `${formatted} ${unit}`;
+}
+
 export function formatPercentage(value: number) {
   const safe = Math.max(0, Math.min(100, value));
   if (safe === 0 || safe === 100) return `${safe}%`;
@@ -495,8 +500,10 @@ function ProviderCard({ snapshot }: { snapshot: ProviderSnapshot }) {
               return (
                 <div className="metric" key={`${metric.kind}-${metric.label}`}>
                   <span>{metric.label}</span>
-                  <strong>{remaining !== undefined ? `${formatNumber(remaining, metric.unit)} left` : formatNumber(metric.consumed, metric.unit)}</strong>
-                  {used !== undefined && metric.limit !== undefined && <small>{formatNumber(used, metric.unit)} used of {formatNumber(metric.limit, metric.unit)}</small>}
+                  <strong>{remaining !== undefined ? `${formatMetricAmount(remaining, metric.unit)} left` : formatMetricAmount(metric.consumed, metric.unit)}</strong>
+                  {used !== undefined && metric.limit !== undefined && (
+                    <small>{formatMetricAmount(used, metric.unit)} used of {formatMetricAmount(metric.limit, metric.unit)}</small>
+                  )}
                 </div>
               );
             })}

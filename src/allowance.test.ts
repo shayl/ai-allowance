@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   calculateCombinedUsage,
   filterDisconnectedCandidates,
+  formatMetricAmount,
   formatPercentage,
   metricUsedAmount,
   type AllowanceMetric,
@@ -51,6 +52,11 @@ describe("calculateCombinedUsage", () => {
         [snapshot("connected", [])],
       ).map((account) => account.id)).toEqual(["available"]);
     });
+  });
+
+  it("keeps AIC values visibly distinct from dollars", () => {
+    expect(formatMetricAmount(200000, "AIC")).toBe("200,000 AIC");
+    expect(formatMetricAmount(14.09, "USD")).toBe("$14.09");
   });
 
   it("weights same-unit usage by aggregating raw used and limits across accounts", () => {
