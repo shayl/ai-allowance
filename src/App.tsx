@@ -162,8 +162,9 @@ function discoveredAccountGuide(candidate: LocalAccountCandidate) {
       ? [
           "This key is already available to AI Allowance. Confirm it belongs to the organization you want to monitor.",
           "Choose Connect. The key stays in the computer environment and is not copied into AI Allowance's database.",
+          "If this is an individual Claude account, first convert it to an organization/team in Claude Console. Individual accounts cannot use the Usage and Cost Admin API.",
           "If it fails, ask your Claude organization administrator to create an Admin key in Claude Console → Settings → Admin keys.",
-          "A personal Claude subscription key or a normal workspace key will not work for organization reports.",
+          "The key must begin with sk-ant-admin01-. A regular personal, organization-scoped, or workspace API key beginning with sk-ant-api will not work for these reports.",
         ]
       : [
           "This key is already available to AI Allowance. Confirm it belongs to the OpenAI organization you want to monitor.",
@@ -203,12 +204,15 @@ function manualAccountGuide(form: AccountInput) {
   if (form.provider === "anthropic") {
     return form.scopeType === "organization"
       ? [
-          "Sign in at platform.claude.com with a Claude Console organization account. You must have the Admin role.",
+          "Sign in at platform.claude.com. AI Allowance can report API usage only for a Claude organization/team, not an individual account.",
+          "If your account is still individual, open the organization settings in Claude Console and convert the account to an organization/team. Complete any setup Claude requests.",
+          "After conversion, make sure your account has the Admin or Owner role.",
           "Open Settings → Admin keys, or go directly to platform.claude.com/settings/admin-keys.",
+          "If Admin keys is missing, the account is still individual or the signed-in user does not have the required organization role.",
           "Choose Create key, enter a name such as AI Allowance, choose when it should expire, and create it.",
           "Copy the key immediately. It begins with sk-ant-admin01-, and Claude shows the full key only once.",
           "Enter your organization name or ID below, paste the key, and choose Save account.",
-          "A normal Claude API key will not work here. This connection reports organization usage and cost, not personal Pro/Max allowance.",
+          "Do not use a regular key beginning with sk-ant-api, even if its Scope is Organization. This connection reports organization API usage and cost, not personal Pro/Max allowance.",
         ]
       : [
           "A personal Claude Pro or Max account does not have an API key that reveals its remaining allowance.",

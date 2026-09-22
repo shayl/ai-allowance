@@ -4,7 +4,7 @@ A Windows-first system-tray and detachable desktop widget for viewing
 authoritative AI usage, billed cost, quota, and reset data across GitHub
 Copilot, Anthropic, and OpenAI.
 
-Current version: **0.2.0**
+Current version: **0.2.1**
 
 ## Principles
 
@@ -184,6 +184,12 @@ the three artifacts automatically. See
 Personal Claude Pro/Max and ChatGPT/Codex allowance cards intentionally report
 that the metric is unavailable because no documented third-party account API is
 used.
+
+Anthropic's Usage and Cost Admin API is unavailable to individual accounts.
+Before connecting Anthropic, convert the Claude Console account to an
+organization/team if necessary, then create an Admin API key under **Settings →
+Admin keys**. The key must begin with `sk-ant-admin01-`; a regular
+organization-scoped key beginning with `sk-ant-api` is not sufficient.
 
 Anthropic organization connections report current-month API cost in USD,
 uncached input tokens, cache-creation tokens, cache-read tokens, output tokens,

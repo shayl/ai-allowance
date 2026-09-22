@@ -6,10 +6,14 @@ The project follows Semantic Versioning. Dates use the ISO `YYYY-MM-DD` format.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-21
+
 ### Fixed
 
 - Repeat metric units beside displayed values so Copilot AIC entitlement cannot
   be mistaken for a dollar amount.
+- Explain in the Claude connection guide that individual accounts must first be
+  converted to an organization/team and require an `sk-ant-admin01-` key.
 
 ## [0.2.0] - 2026-09-19
 
